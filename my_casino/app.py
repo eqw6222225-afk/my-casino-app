@@ -368,34 +368,79 @@ else:
                 st.warning("파산 처리되었습니다. 30분간 접속이 금지됩니다.")
                 st.rerun()
 
-    # 관리자 / 매니저 패널
+    # 관리자 / 매니저 패널 (매니저 권한 제한 및 어드민 전용 기능 적용)
     elif st.session_state.page == "admin" and uid in (ADMIN_ID, MANAGER_ID):
         st.title("🛠️ SYSTEM ADMINISTRATION")
+        
+        # 전체 유저 현황
         st.dataframe([{
-            "ID": u, "상태": "🟢 활성" if d.get("is_active") else "🔴 정지",
-            "잔액": f"{d.get('balance',0):,} P", "사채": f"{d.get('loan',0):,} P",
+            "ID": u, 
+            "상태": "🟢 정상" if d.get("is_active", True) and time.time() >= d.get("ban_until", 0) else "🔴 정지됨",
+            "잔액": f"{d.get('balance',0):,} P", 
+            "사채": f"{d.get('loan',0):,} P",
             "확률모드": d.get("rig_mode","NORMAL")
         } for u, d in db.items() if u != "_settings"])
 
-        target_u = st.selectbox("대상 계정 선택", [u for u in db.keys() if u != "_settings"])
-        adj_amt = st.number_input("지급/차압 금액", value=100000)
-
-        col_a, col_s = st.columns(2)
-        with col_a:
-            if st.button("➕ 머니 지급"):
-                db[target_u]["balance"] += adj_amt
-                save_db(db)
-                st.rerun()
-        with col_s:
-            if st.button("➖ 머니 차압"):
-                db[target_u]["balance"] = max(0, db[target_u]["balance"] - adj_amt)
-                save_db(db)
-                st.rerun()
-
+        # 매니저는 Admin 및 다른 매니저 조작 불가능 (일반 유저만 선택 가능)
         if uid == ADMIN_ID:
-            st.divider()
-            rig_option = st.radio("확률 조작 설정 (Rigging)", ["NORMAL", "FORCE_WIN", "FORCE_LOSE"])
-            if st.button("💾 확률 모드 저장"):
-                db[target_u]["rig_mode"] = rig_option
-                save_db(db)
-                st.success(f"[{target_u}] 의 모드가 {rig_option} 로 변경되었습니다.")
+            selectable_users = [u for u in db.keys() if u not in (ADMIN_ID, "_settings")]
+        else:
+            selectable_users = [u for u in db.keys() if u not in (ADMIN_ID, MANAGER_ID, "_settings")]
+
+        if not selectable_users:
+            st.info("조작할 수 있는 대상 계정이 없습니다.")
+        else:
+            target_u = st.selectbox("대상 계정 선택", selectable_users)
+            
+            if target_u:
+                st.write(f"현재 선택된 계정: **{target_u}**")
+                
+                # 1. 머니 지급 및 차압 (관리자 및 매니저 공통)
+                st.subheader("💵 머니 지급 / 차압")
+                adj_amt = st.number_input("지급/차압 금액", value=100000, step=10000)
+                col_a, col_s = st.columns(2)
+                with col_a:
+                    if st.button("➕ 머니 지급", use_container_width=True):
+                        db[target_u]["balance"] += adj_amt
+                        save_db(db)
+                        st.success(f"[{target_u}] 님에게 {adj_amt:,} P 지급 완료")
+                        st.rerun()
+                with col_s:
+                    if st.button("➖ 머니 차압", use_container_width=True):
+                        db[target_u]["balance"] = max(0, db[target_u]["balance"] - adj_amt)
+                        save_db(db)
+                        st.warning(f"[{target_u}] 님의 {adj_amt:,} P 차압 완료")
+                        st.rerun()
+
+                st.divider()
+
+                # 2. 계정 정지 / 정지 해제 기능 (★ 어드민 전용)
+                if uid == ADMIN_ID:
+                    st.subheader("🚨 계정 제재 관리 (어드민 전용)")
+                    col_ban1, col_ban2 = st.columns(2)
+                    with col_ban1:
+                        if st.button("🔴 계정 강제 정지", use_container_width=True):
+                            db[target_u]["is_active"] = False
+                            save_db(db)
+                            st.error(f"[{target_u}] 계정을 영구 정지 처리했습니다.")
+                            st.rerun()
+
+                    with col_ban2:
+                        if st.button("🟢 정지 해제 / 파산 풀기", use_container_width=True):
+                            db[target_u]["is_active"] = True
+                            db[target_u]["ban_until"] = 0
+                            save_db(db)
+                            st.success(f"[{target_u}] 계정의 정지를 해제했습니다.")
+                            st.rerun()
+
+                    st.divider()
+
+                    # 3. 승률 조작 (★ 어드민 전용)
+                    st.subheader("🎯 승률 조작 (Rigging)")
+                    rig_option = st.radio("확률 모드 선택", ["NORMAL", "FORCE_WIN", "FORCE_LOSE"], horizontal=True)
+                    if st.button("💾 확률 모드 저장"):
+                        db[target_u]["rig_mode"] = rig_option
+                        save_db(db)
+                        st.success(f"[{target_u}] 님의 모드가 [{rig_option}] 로 변경되었습니다.")
+                else:
+                    st.info("💡 계정 제재(정지/해제) 및 승률 조작 권한은 어드민(Admin)에게만 부여되어 있습니다.")
